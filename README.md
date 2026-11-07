@@ -1,67 +1,140 @@
-# pdfid.py
+# pdfid
 
-Changes from the original version:
+A modernized, pure-Python 3 (≥ 3.9) rewrite of Didier Stevens'
+[PDFiD](https://blog.didierstevens.com/programs/pdf-tools/) triage tool,
+originally packaged by Raphaël Vinot.
 
-* Add support for pseudo files
-* Make it a python package 
+PDFiD is **not** a PDF parser — on purpose. It scans a file for certain PDF
+keywords, letting you quickly identify documents that contain (for example)
+JavaScript or execute an action when opened, while handling hex-encoded name
+obfuscation (`/J#61vaScript`). Use it first to triage, then analyze the
+suspicious ones with a real parser.
 
------------------------------------------------
+Zero third-party dependencies: standard library only.
 
-[This documentation is a copy of the description available in the official website](https://blog.didierstevens.com/programs/pdf-tools/)
+## Usage without installing
 
-This tool is not a PDF parser, but it will scan a file to look for certain PDF keywords, allowing you to identify PDF documents that contain (for example) JavaScript or execute an action when opened. PDFiD will also handle name obfuscation.
+The repository uses the sqlmap/dirsearch layout: a thin entry script next
+to the package, no installation needed:
 
-The idea is to use this tool first to triage PDF documents, and then analyze the suspicious ones with my pdf-parser.
-
-An important design criterium for this program is simplicity. Parsing a PDF document completely requires a very complex program, and hence it is bound to contain many (security) bugs. To avoid the risk of getting exploited, I decided to keep this program very simple (it is even simpler than pdf-parser.py).
-
-![Printscreen](/img/20090330-214223.png)
-
-PDFiD will scan a PDF document for a given list of strings and count the occurrences (total and obfuscated) of each word.
-
-Almost every PDF documents will contain the first 7 words (obj through startxref), and to a lesser extent stream and endstream. I’ve found a couple of PDF documents without xref or trailer, but these are rare (BTW, this is not an indication of a malicious PDF document).
-
-```
-* obj
-* endobj
-* stream
-* endstream
-* xref
-* trailer
-* startxref
+```bash
+python pdfid.py [options] file.pdf      # run directly, nothing to install
+cat file.pdf | python pdfid.py          # read from stdin
+python pdfid.py -s /some/dir            # recursive scan
 ```
 
-* `/Page`: gives an indication of the number of pages in the PDF document. Most malicious PDF document have only one page.
-* `/Encrypt`: indicates that the PDF document has DRM or needs a password to be read.
-* `/ObjStm`: counts the number of object streams. An object stream is a stream object that can contain other objects, and can therefor be used to obfuscate objects (by using different filters).
+Copy the whole folder (or just `pdfid.py` + `pdfid/`) anywhere - as long as
+they stay side by side, it runs on any Python ≥ 3.9.
 
+## Optional: install as a package
 
-The two following indicate that the PDF document contains JavaScript. Almost all malicious PDF documents that I’ve found in the wild contain JavaScript (to exploit a JavaScript vulnerability and/or to execute a heap spray). Of course, you can also find JavaScript in PDF documents without malicious intend.
+```bash
+pip install .            # from a checkout
+pip install ".[test]"    # with the test extra
+```
 
-* `/JS`
-* `/JavaScript`
+Installing provides the `pdfid` console command and makes `import pdfid`
+available from anywhere; tests: `python -m pytest`.
 
+## CLI usage
 
-The two following indicate an automatic action to be performed when the page/document is viewed. All malicious PDF documents with JavaScript I’ve seen in the wild had an automatic action to launch the JavaScript without user interaction.
+```
+usage: pdfid [-h] [-s] [-a] [-e] [-f] [-d] [-p PLUGINS] [-c] [-j]
+             [-m MINIMUMSCORE] [-v] [-S SELECT] [-o OUTPUT]
+             [pdf-file|zip-file|url|@file ...]
+```
 
-* `/AA`
-* `/OpenAction`
+| Option | Description |
+|---|---|
+| `-s`, `--scan` | recursively scan a directory |
+| `-a`, `--all` | display all names, not just the known keywords |
+| `-e`, `--extra` | display extra data: dates, entropy, `%%EOF` statistics |
+| `-f`, `--force` | scan even without a proper `%PDF` header |
+| `-d`, `--disarm` | write a `.disarmed.pdf` copy with dangerous names case-swapped |
+| `-p`, `--plugins` | `all`, a builtin name (`triage`, `embeddedfile`, `nameobfuscation`), or `.py` file paths |
+| `-c`, `--csv` | CSV output when using plugins |
+| `-j`, `--json` | JSON output (PDFiD2JSON-compatible layout) |
+| `-m`, `--minimumscore` | minimum score for plugin results |
+| `-S`, `--select` | selection expression, safely evaluated (e.g. `pdf.js.count > 0`) |
+| `-o`, `--output` | also append output to a log file |
+| `-v`, `--verbose` | verbose (re-raises caught exceptions) |
 
-The combination of automatic action  and JavaScript makes a PDF document very suspicious.
+Inputs can be files, URLs, `.zip` archives (first entry, password
+`infected`), `@file` lists, or glob patterns; with no argument PDFiD reads
+from stdin.
 
+```console
+$ pdfid -e sample.pdf
+PDFiD 1.0.0 sample.pdf
+ PDF Header: %PDF-1.4
+ obj                        4
+ endobj                     4
+ ...
+ /JavaScript                1
+ /OpenAction                1
+ ...
+```
 
-* `/JBIG2Decode`: indicates if the PDF document uses JBIG2 compression. This is not necessarily and indication of a malicious PDF document, but requires further investigation.
-* `/RichMedia`: is for embedded Flash.
-* `/Launch`: counts launch actions.
-* `/XFA`: is for XML Forms Architecture.
+A number between parentheses after a counter is the number of *obfuscated*
+occurrences, e.g. `/JBIG2Decode 1(1)` means the name was found hex-encoded
+(`/JBIG#32Decode`).
 
+## Python API
 
-A number that appears between parentheses after the counter represents the number of obfuscated occurrences. For example, `/JBIG2Decode 1(1)` tells you that the PDF document contains the name `/JBIG2Decode` and that it was obfuscated (using hexcodes, e.g. `/JBIG#32Decode`).
+```python
+from pdfid import PDFiD
 
-BTW, all the counters can be skewed if the PDF document is saved with incremental updates.
+result = PDFiD('sample.pdf', extra_data=True)
+result.is_pdf                      # True
+result.javascript.count            # 1
+result.openaction.hexcode          # 0
+result.eof.chars_after_last_eof    # data appended after %%EOF
+PDFiD('x.pdf', disarm=True).disarmed_to
+```
 
-Because `PDFiD` is just a string scanner (supporting name obfuscation), it will also generate false positives. For example, a simple text file starting with `%PDF-1.1` and containing words from the list will also be identified as a PDF document.
+Historical names `PDFiD2String(result)` / `PDFiD2JSON(result)` are kept for
+compatibility; the old camelCase keyword arguments (`allNames`, `extraData`)
+are still accepted. Data is carried by dataclasses
+(`PDFiDResult`, `KeywordCount`, `DateEntry`, `EntropyStats`, `EOFStats`)
+instead of an XML DOM document.
 
+### Writing plugins
 
+```python
+from pdfid.plugins import PDFiDPlugin, register
 
+@register
+class MyPlugin(PDFiDPlugin):
+    name = 'My plugin'
+    only_valid_pdf = True
 
+    def score(self) -> float:
+        return 1.0 if self.pdf.launch.count > 0 else 0.0
+```
+
+Legacy plugin files (`class cPDFiDTriage(cPluginParent)` + `AddPlugin(...)`)
+still load through `-p path/to/plugin.py` via a compatibility adapter.
+
+## Changes vs. the original 0.2.1
+
+* Python ≥ 3.9, no Python 2 support code, type hints throughout.
+* `pyproject.toml` (PEP 621) + `src/` layout + `pdfid` entry point; `optparse` → `argparse`.
+* XML DOM no longer used as a data container — dataclasses instead.
+* **Bug fixes**:
+  * `/Colors > 2^24` (CVE-2009-3459) check now compares against `2**24`; the
+    original used `2^24` (XOR = 26), flagging nearly everything.
+  * Non-stream entropy was always `0.000000` on Python 3 (a lazy `map`
+    consumed twice); now computed correctly.
+  * Reading from stdin now uses the binary buffer; several rare crash paths
+    (short `%PDF` header, EOF inside `#xx` sequences) are handled.
+* `-S/--select` expressions are evaluated through an AST whitelist instead of
+  bare `eval()`.
+* Disarm notices go to stderr, keeping stdout reports clean.
+* New `-j/--json` output option; `-p` accepts builtin plugin names and `all`.
+* Smoke-test suite (`pytest`).
+
+## Credits & license
+
+Original tool by Didier Stevens (https://DidierStevens.com), put in the
+public domain. Modernization by Raphaël Vinot / contributors. Use at your
+own risk.
